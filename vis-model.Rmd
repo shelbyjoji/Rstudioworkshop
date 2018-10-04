@@ -4,7 +4,6 @@ output:
   html_notebook: default
 ---
 
-
 ```{r setup, include = FALSE}
 install.packages("tidyverse")
 install.packages("tidyquant")
