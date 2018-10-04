@@ -1,0 +1,303 @@
+---
+title: "Shiny Fama French"
+output: 
+  html_notebook: default
+---
+
+
+```{r setup, include = FALSE}
+install.packages("tidyverse")
+install.packages("tidyquant")
+install.packages("timetk")
+install.packages("broom")
+```
+
+```{r}
+
+library(tidyquant)
+library(tidyverse)
+library(timetk)
+library(broom)
+
+knitr::opts_chunk$set(message=FALSE, warning=FALSE)
+```
+
+
+
+```{r}
+# The symbols vector holds our tickers. 
+symbols <- c("SPY","EFA", "IJS", "EEM","AGG")
+
+returns_tq <- 
+  tq_get(symbols, 
+         get = "stock.prices",
+         from = "2013-01-01") %>% 
+  select(symbol, date, adjusted) %>% 
+  group_by(symbol) %>%
+  tq_transmute(select     = adjusted, 
+                 mutate_fun = periodReturn,
+                 period = "daily",
+                 col_rename = "return") %>% 
+  spread(symbol, return)
+```
+
+
+### Importing and Wrangling the Fama French Factors
+
+
+```{r}
+factors_input <- "Global_5_Factors_Daily"
+
+factors_address <- 
+  paste("http://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/", 
+        factors_input, "_CSV.zip", 
+        sep="" )
+
+factors_csv_name <- paste(factors_input, ".csv", sep="")
+
+temp <- tempfile()
+
+download.file(
+  # location of file to be downloaded
+  factors_address,
+  # where we want R to store that file
+  temp)
+
+Global_5_Factors <- 
+  read_csv(unz(temp, factors_csv_name), skip = 6 ) %>%
+  rename(date = X1, MKT = `Mkt-RF`) %>%
+  mutate(date = ymd(parse_date_time(date, "%Y%m%d")))%>%
+  mutate_if(is.numeric, funs(. / 100))
+
+tail(Global_5_Factors)
+
+```
+
+
+### Join our data
+
+```{r}
+
+data_joined <-
+  returns_tq %>% 
+  left_join(Global_5_Factors) %>% 
+  na.omit()
+
+data_joined_tidy <- 
+  data_joined %>% 
+  gather(asset, return, -date, -MKT, -SMB, -HML, -RMW, -CMA, -RF) %>% 
+  select(date, asset, return, everything())
+```
+
+### Exploratory
+
+```{r}
+data_joined %>%
+  # Try SMB, HML, MKT
+  ggplot(aes(x = MKT, y = EEM)) +
+  geom_point(color = "cornflowerblue")
+```
+
+```{r}
+data_joined %>%
+  # Try SMB, HML, MKT
+  ggplot(aes(x = MKT, y = EEM)) +
+  geom_point(color = "cornflowerblue") +
+  geom_smooth(method = "lm", 
+              formula = y~x, 
+              color = "pink", 
+              se = TRUE)
+```
+
+```{r}
+data_joined %>% 
+  ggplot(aes(x = EEM)) +
+  geom_histogram(fill = "cornflowerblue", color = "pink", bins = 60)
+```
+
+```{r}
+data_joined %>% 
+  ggplot(aes(x = EEM)) +
+  #geom_histogram(fill = "cornflowerblue", color = "pink", bins = 60) +
+  geom_density(color = "pink")
+```
+
+```{r}
+data_joined %>% 
+ggplot(aes(sample = SPY)) +
+  geom_qq(color = "cornflowerblue") 
+```
+
+```{r}
+data_joined_tidy %>%
+  # Try SMB, HML, MKT
+  ggplot(aes(x = MKT, y = return, color = asset)) +
+  geom_point() +
+  facet_wrap(~asset)
+```
+
+```{r}
+data_joined_tidy %>%
+  # Try SMB, HML, MKT
+  ggplot(aes(x = MKT, y = return, color = asset)) +
+  geom_point() +
+  geom_smooth(method = "lm", 
+              formula = y~x, 
+              color = "pink", 
+              se = TRUE) +
+  facet_wrap(~asset)
+```
+
+```{r}
+data_joined_tidy %>% 
+  ggplot(aes(x = return, fill = asset)) +
+  geom_histogram(bins = 60) +
+  facet_wrap(~asset)
+```
+
+```{r}
+data_joined_tidy %>% 
+  ggplot(aes(x = return, color = asset)) +
+  geom_density() +
+  facet_wrap(~asset)
+```
+
+```{r}
+data_joined_tidy %>% 
+  ggplot(aes(sample = return, color = asset)) +
+  geom_qq() +
+  facet_wrap(~asset)
+```
+
+### Modeling data
+
+```{r}
+one_asset <- 
+  data_joined_tidy %>% 
+  filter(asset == "SPY")
+```
+
+One group, one model
+
+```{r}
+one_asset %>% 
+  do(model = 
+       lm(return ~ MKT + SMB + HML, 
+                data = .)) #%>% 
+  #tidy(model, conf.int = T, conf.level = .95)
+  # glance(model)
+  # augment(model)
+```
+
+One group, many models
+
+```{r}
+one_asset %>% 
+  nest(-asset) %>% 
+  mutate(model1 = map(data, ~ lm(return ~ MKT, 
+                data = .)),
+         model3 = map(data, ~ lm(return ~ MKT + SMB + HML, 
+                data = .)))
+  
+
+
+```
+
+
+Many groups, many models - write out the equations
+
+```{r}
+by_asset <- 
+  data_joined_tidy %>% 
+  group_by(asset) %>% 
+  nest()
+
+by_asset %>% 
+  mutate(model1 = map(data, ~ lm(return ~ MKT, 
+                data = .)),
+         model3 = map(data, ~ lm(return ~ MKT + SMB + HML, 
+                data = .))) #%>% 
+  # mutate(tidied_model1 = map(model1, tidy),
+  #        tidied_model3 = map(model3, tidy))
+
+```
+
+Many groups, many models - turn equations into functions and map them -> funcitonal programming
+
+```{r}
+library(modelr)
+
+one_factor_model <- function(df) {
+  lm(return ~ MKT, data = df)
+}
+
+three_factor_model <- function(df) {
+  lm(return ~ MKT + SMB + HML, data = df)
+}
+
+five_factor_model <- function(df) {
+  lm(return ~ MKT + SMB + HML + RMW + CMA, data = df)
+}
+
+by_asset %>%
+  mutate(one_factor_model = map(data, one_factor_model),
+         three_factor_model= map(data, three_factor_model),
+         five_factor_model = map(data, five_factor_model))
+```
+
+Arrange by r-squared (model ranking? if we trust r-squared)
+
+```{r}
+by_asset %>% 
+  mutate(one_factor_model = map(data, one_factor_model)) %>% 
+  mutate(glance = map(one_factor_model, glance)) %>% 
+  unnest(glance, .drop = TRUE) %>% 
+  arrange(r.squared) #%>% 
+  # ggplot(aes(x= asset, y = r.squared, color = asset)) + 
+  #   geom_point()
+```
+
+```{r}
+by_asset %>% 
+  mutate(one_factor_model = map(data, one_factor_model)) %>% 
+  mutate(glance = map(one_factor_model, broom::glance)) %>% 
+  unnest(glance)
+```
+
+Add predictions and residuals et al.
+
+```{r}
+by_asset %>% 
+  mutate(one_factor_model = map(data, one_factor_model)) %>% 
+  mutate(predict = map(one_factor_model, augment)) %>% 
+  unnest(predict) #%>% 
+  # group_by(asset) %>% 
+  # mutate(date = data_joined$date) %>% 
+  # select(date, asset, return, .fitted) %>% 
+  # ggplot(aes(x = date)) +
+  # geom_line(aes(y = return), color = "blue") +
+  # geom_line(aes(y = .fitted), color = "red") +
+  # facet_wrap(~asset)
+```
+
+Tidy, glance and augment all models
+
+```{r}
+
+by_asset %>%
+  mutate(one_factor_model = map(data, one_factor_model),
+         three_factor_model= map(data, three_factor_model),
+         five_factor_model = map(data, five_factor_model)) %>% 
+  mutate(tidied_one = map(one_factor_model, tidy),
+         tidied_three = map(three_factor_model, tidy),
+         tidied_five = map(five_factor_model, tidy)) %>% 
+  mutate(glanced_one = map(one_factor_model, glance),
+         glanced_three = map(three_factor_model, glance),
+         glanced_five = map(five_factor_model, glance)) %>%
+  mutate(augmented_one = map(one_factor_model, augment),
+         augmented_three = map(three_factor_model, augment),
+         augmented_five = map(five_factor_model, augment))
+  # unnest any broomed column for viewing
+  # unnest(glanced_five)
+```
+
